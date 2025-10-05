@@ -14,6 +14,14 @@ from .flow_generator import FlowGenerator
 from .live_capture import LiveCapture, LiveCaptureError
 from .flow_feature import FlowFeature
 from .packet_reader import PacketReader
+from .clustering import (
+    ClusterResult,
+    FlowClusterer,
+    FlowDataset,
+    load_flow_csv,
+    load_url_csv,
+    perform_pca,
+)
 
 __all__ = [
     "IdGenerator",
@@ -22,6 +30,12 @@ __all__ = [
     "FlowGenerator",
     "FlowFeature",
     "PacketReader",
+    "FlowDataset",
+    "FlowClusterer",
+    "ClusterResult",
+    "load_flow_csv",
+    "load_url_csv",
+    "perform_pca",
     "LiveCapture",
     "LiveCaptureError",
     "EndpointSummary",

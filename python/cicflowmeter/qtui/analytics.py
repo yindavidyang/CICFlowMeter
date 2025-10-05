@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import math
-import random
 from collections import deque
 from dataclasses import dataclass
 from typing import Callable, Deque, Iterable, List, Optional, Sequence, Tuple
 
+import numpy as np
 from PySide6.QtCharts import (
     QBarCategoryAxis,
     QBarSeries,
@@ -35,6 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from .types import FlowSummary
+from ..clustering import FlowClusterer, dataset_from_matrix
 
 try:  # Optional 3D visualization support
     from PySide6.QtDataVisualization import (
@@ -434,21 +434,53 @@ class FlowAnalyticsPane(QGroupBox):
             metric_y = self.scatter_y_combo.currentData()
             if not isinstance(metric_x, MetricSpec) or not isinstance(metric_y, MetricSpec):
                 return
-            points = [
-                (metric_x.extractor(flow), metric_y.extractor(flow))
-                for flow in flows
-            ]
-        else:
-            points, explained = _compute_pca_projection(flows)
-            self._scatter.set_axis_labels(
-                f"PC1 ({explained[0]:.0f}% var)",
-                f"PC2 ({explained[1]:.0f}% var)",
-            )
 
-        cluster_points, cluster_indices = _cluster_points(points)
+            annotated = [
+                (index, metric_x.extractor(flow), metric_y.extractor(flow))
+                for index, flow in enumerate(flows)
+                if metric_x.extractor(flow) or metric_y.extractor(flow)
+            ]
+            if not annotated:
+                self.reset()
+                return
+
+            index_map = [entry[0] for entry in annotated]
+            matrix = np.asarray([[entry[1], entry[2]] for entry in annotated], dtype=float)
+            dataset = dataset_from_matrix(matrix, (metric_x.key, metric_y.key))
+            clusterer = FlowClusterer(dataset)
+            clusterer.build_raw()
+            result = clusterer.raw_result()
+            if result is None:
+                self.reset()
+                return
+            cluster_points, cluster_indices = _clusters_from_result(result, index_map)
+            axis_x_label = metric_x.axis_label
+            axis_y_label = metric_y.axis_label
+        else:
+            dataset = _dataset_from_flows(flows)
+            if dataset is None or not dataset.has_numeric_data():
+                self.reset()
+                return
+
+            clusterer = FlowClusterer(dataset)
+            clusterer.build_with_dimensionality_reduction()
+            projection = clusterer.reduced_projection()
+            result = clusterer.reduced_result()
+            if projection is None or result is None:
+                self.reset()
+                return
+
+            explained = projection.explained_variance_ratio
+            axis_x_label = _pc_axis_label("PC1", explained, 0)
+            axis_y_label = _pc_axis_label("PC2", explained, 1)
+            index_map = list(range(len(flows)))
+            cluster_points, cluster_indices = _clusters_from_result(result, index_map)
+
         if not cluster_points:
             self.reset()
             return
+
+        self._scatter.set_axis_labels(axis_x_label, axis_y_label)
 
         self._scatter.update_clusters([
             (f"Cluster {i + 1} ({len(indices)} flows)", pts)
@@ -519,145 +551,83 @@ class FlowAnalyticsPane(QGroupBox):
 
 # ----------------------------------------------------------------------
 
-def _cluster_points(
-    points: List[Tuple[float, float]],
-    k: int = 3,
+
+def _clusters_from_result(
+    result: Optional["ClusterResult"],
+    index_map: Sequence[int],
 ) -> Tuple[List[List[Tuple[float, float]]], List[List[int]]]:
-    annotated = [
-        (index, point[0], point[1])
-        for index, point in enumerate(points)
-        if point[0] or point[1]
-    ]
-    if not annotated:
+    if result is None:
         return [], []
 
-    target_k = min(k, len(annotated)) or 1
-    centroids = [
-        (annotated[idx][1], annotated[idx][2])
-        for idx in random.sample(range(len(annotated)), target_k)
-    ]
+    projection = np.asarray(result.projection)
+    labels = np.asarray(result.labels, dtype=int)
+    if projection.size == 0 or projection.shape[0] == 0:
+        return [], []
 
-    for _ in range(15):
-        assignments: List[List[Tuple[int, float, float]]] = [[] for _ in range(target_k)]
-        for orig_index, x, y in annotated:
-            distances = [
-                (cx - x) ** 2 + (cy - y) ** 2
-                for cx, cy in centroids
-            ]
-            closest = min(range(target_k), key=lambda idx_: distances[idx_])
-            assignments[closest].append((orig_index, x, y))
+    if projection.shape[1] < 2:
+        zeros = np.zeros((projection.shape[0], 2 - projection.shape[1]))
+        projection = np.hstack([projection, zeros])
 
-        new_centroids: List[Tuple[float, float]] = []
-        for cluster in assignments:
-            if not cluster:
-                new_centroids.append(random.choice(annotated)[1:])
-                continue
-            avg_x = sum(point[1] for point in cluster) / len(cluster)
-            avg_y = sum(point[2] for point in cluster) / len(cluster)
-            new_centroids.append((avg_x, avg_y))
+    clusters_points: List[List[Tuple[float, float]]] = []
+    clusters_indices: List[List[int]] = []
 
-        if all(
-            math.isclose(cx, nx, rel_tol=1e-3) and math.isclose(cy, ny, rel_tol=1e-3)
-            for (cx, cy), (nx, ny) in zip(centroids, new_centroids)
-        ):
-            centroids = new_centroids
-            break
-        centroids = new_centroids
-
-    clusters_points = [
-        [(point[1], point[2]) for point in cluster]
-        for cluster in assignments
-        if cluster
-    ]
-    clusters_indices = [
-        [point[0] for point in cluster]
-        for cluster in assignments
-        if cluster
-    ]
-
-    if not clusters_points:
-        clusters_points = [[(point[1], point[2]) for point in annotated]]
-        clusters_indices = [[point[0] for point in annotated]]
+    unique_labels = sorted(set(labels.tolist()))
+    for cluster_label in unique_labels:
+        member_positions = [idx for idx, label in enumerate(labels) if label == cluster_label]
+        if not member_positions:
+            continue
+        pts = [
+            (
+                float(projection[pos, 0]),
+                float(projection[pos, 1]),
+            )
+            for pos in member_positions
+        ]
+        clusters_points.append(pts)
+        clusters_indices.append([index_map[pos] for pos in member_positions])
 
     combined = sorted(
         zip(clusters_points, clusters_indices),
         key=lambda pair: len(pair[1]),
         reverse=True,
     )
+
+    if not combined:
+        return [], []
+
     separated_points, separated_indices = zip(*combined)
     return list(separated_points), list(separated_indices)
+
+
+def _dataset_from_flows(flows: Sequence[FlowSummary]) -> Optional["FlowDataset"]:
+    if not flows:
+        return None
+
+    matrix = np.asarray(
+        [
+            (
+                max(flow.duration_s, 0.0),
+                float(max(flow.packets, 0)),
+                float(max(flow.bytes, 0)),
+            )
+            for flow in flows
+        ],
+        dtype=float,
+    )
+    column_names = ("duration", "packets", "bytes")
+    return dataset_from_matrix(matrix, column_names)
+
+
+def _pc_axis_label(name: str, explained: Sequence[float], index: int) -> str:
+    if index < len(explained) and explained[index] > 0:
+        return f"{name} ({explained[index] * 100:.0f}% var)"
+    return name
 
 
 def _format_bucket(lower: float, upper: float) -> str:
     if lower == 0.0:
         return f"≤ {upper:g}"
     return f"{lower:g}–{upper:g}"
-
-
-def _compute_pca_projection(
-    flows: List[FlowSummary],
-) -> Tuple[List[Tuple[float, float]], Tuple[float, float]]:
-    packets = [max(flow.packets, 0) for flow in flows]
-    bytes_ = [max(flow.bytes, 0) for flow in flows]
-    if len(packets) < 2:
-        points = list(zip(packets, bytes_))
-        return points, (0.0, 0.0)
-
-    mean_packets = sum(packets) / len(packets)
-    mean_bytes = sum(bytes_) / len(bytes_)
-    centered = [
-        (p - mean_packets, b - mean_bytes)
-        for p, b in zip(packets, bytes_)
-    ]
-
-    cov_xx = sum(dx * dx for dx, _ in centered) / (len(centered) - 1)
-    cov_yy = sum(dy * dy for _, dy in centered) / (len(centered) - 1)
-    cov_xy = sum(dx * dy for dx, dy in centered) / (len(centered) - 1)
-
-    trace = cov_xx + cov_yy
-    det = cov_xx * cov_yy - cov_xy * cov_xy
-    term = math.sqrt(max(trace * trace / 4 - det, 0.0))
-    eigen1 = trace / 2 + term
-    eigen2 = trace / 2 - term
-
-    def _eigenvector(eigenvalue: float) -> Tuple[float, float]:
-        if abs(cov_xy) > 1e-9:
-            vec = (eigenvalue - cov_yy, cov_xy)
-        elif cov_xx >= cov_yy:
-            vec = (1.0, 0.0)
-        else:
-            vec = (0.0, 1.0)
-        length = math.hypot(*vec)
-        if length == 0:
-            return (1.0, 0.0)
-        return (vec[0] / length, vec[1] / length)
-
-    v1 = _eigenvector(eigen1)
-    v2 = _eigenvector(eigen2)
-
-    points = [
-        (
-            dx * v1[0] + dy * v1[1],
-            dx * v2[0] + dy * v2[1],
-        )
-        for dx, dy in centered
-    ]
-
-    total_var = eigen1 + eigen2 if (eigen1 + eigen2) > 0 else 1.0
-    explained = (
-        max(eigen1, 0.0) / total_var * 100.0,
-        max(eigen2, 0.0) / total_var * 100.0,
-    )
-
-    return points, explained
-
-
-def _centroid(points: List[Tuple[float, float]]) -> Tuple[float, float]:
-    if not points:
-        return (0.0, 0.0)
-    sum_x = sum(point[0] for point in points)
-    sum_y = sum(point[1] for point in points)
-    return (sum_x / len(points), sum_y / len(points))
 
 
 if _HAS_DATAVIZ:  # pragma: no cover - requires Qt Data Visualization
