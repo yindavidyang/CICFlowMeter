@@ -239,6 +239,16 @@ class ClusterResult:
         return [self.projection[np.asarray(self.labels) == index] for index in range(self.k())]
 
 
+@dataclass(frozen=True)
+class ClusterSummary:
+    """High-level statistics for a single cluster."""
+
+    cluster_label: int
+    size: int
+    centroid: np.ndarray
+    stdev: np.ndarray
+
+
 class FlowClusterer:
     """Rudimentary X-Means analogue operating on :class:`FlowDataset`."""
 
@@ -347,6 +357,41 @@ class FlowClusterer:
         return best_result
 
 
+def summarize_clusters(
+    result: Optional[ClusterResult],
+    _axis_labels: Sequence[str] | None = None,
+) -> List[ClusterSummary]:
+    """Compute centroid and deviation statistics for each cluster."""
+
+    if result is None:
+        return []
+
+    projection = np.asarray(result.projection, dtype=float)
+    labels = np.asarray(result.labels, dtype=int)
+    if projection.ndim != 2 or projection.shape[0] == 0:
+        return []
+
+    summaries: List[ClusterSummary] = []
+    for cluster_label in sorted(set(labels.tolist())):
+        cluster_points = projection[labels == cluster_label]
+        if cluster_points.size == 0:
+            continue
+        centroid = cluster_points.mean(axis=0)
+        if cluster_points.shape[0] > 1:
+            stdev = cluster_points.std(axis=0, ddof=1)
+        else:
+            stdev = np.zeros(cluster_points.shape[1])
+        summaries.append(
+            ClusterSummary(
+                cluster_label=cluster_label,
+                size=int(cluster_points.shape[0]),
+                centroid=centroid,
+                stdev=stdev,
+            )
+        )
+    return summaries
+
+
 # ---------------------------------------------------------------------------
 # Lightweight k-means + scoring helpers
 # ---------------------------------------------------------------------------
@@ -408,9 +453,11 @@ __all__ = [
     "FlowDataset",
     "FlowClusterer",
     "ClusterResult",
+    "ClusterSummary",
     "Projection",
     "dataset_from_matrix",
     "load_flow_csv",
     "load_url_csv",
     "perform_pca",
+    "summarize_clusters",
 ]

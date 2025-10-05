@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
-from typing import Callable, Deque, Iterable, List, Optional, Sequence, Tuple
+from typing import Callable, Deque, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 from PySide6.QtCharts import (
@@ -13,14 +13,17 @@ from PySide6.QtCharts import (
     QBarSet,
     QChart,
     QChartView,
+    QDateTimeAxis,
+    QLineSeries,
     QScatterSeries,
     QValueAxis,
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QDateTime, QPointF
 from PySide6.QtGui import QColor, QPainter, QVector3D
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
+    QDoubleSpinBox,
     QFormLayout,
     QGridLayout,
     QGroupBox,
@@ -34,7 +37,13 @@ from PySide6.QtWidgets import (
 )
 
 from .types import FlowSummary
-from ..clustering import FlowClusterer, dataset_from_matrix
+from ..clustering import (
+    ClusterResult,
+    ClusterSummary,
+    FlowClusterer,
+    dataset_from_matrix,
+    summarize_clusters,
+)
 
 try:  # Optional 3D visualization support
     from PySide6.QtDataVisualization import (
@@ -231,6 +240,75 @@ class ClusterScatterPlot(QChartView):
         self._axis_y.setRange(0.0, max(1.0, max_y * 1.05))
 
 
+class FlowTimelineChart(QChartView):
+    """Shows flow arrival counts over a rolling window."""
+
+    def __init__(self, parent=None, bucket_seconds: int = 30) -> None:
+        self._bucket_seconds = max(1, bucket_seconds)
+
+        chart = QChart()
+        chart.setTitle("Flow timeline")
+        self._series = QLineSeries()
+        self._series.setName("Flows")
+        chart.addSeries(self._series)
+        chart.legend().setVisible(False)
+
+        self._axis_x = QDateTimeAxis()
+        self._axis_x.setTitleText("Time")
+        self._axis_x.setFormat("HH:mm:ss")
+        chart.addAxis(self._axis_x, Qt.AlignBottom)
+        self._series.attachAxis(self._axis_x)
+
+        self._axis_y = QValueAxis()
+        self._axis_y.setTitleText("Flows per interval")
+        self._axis_y.setLabelFormat("%d")
+        chart.addAxis(self._axis_y, Qt.AlignLeft)
+        self._series.attachAxis(self._axis_y)
+
+        super().__init__(chart, parent)
+        self.setRenderHint(QPainter.Antialiasing)
+        self.setMinimumHeight(200)
+        self.clear()
+
+    def clear(self) -> None:
+        self._series.clear()
+        now = QDateTime.currentDateTime()
+        self._axis_x.setRange(now.addSecs(-5 * self._bucket_seconds), now)
+        self._axis_y.setRange(0, 1)
+
+    def update_data(self, flows: Sequence[FlowSummary]) -> None:
+        if not flows:
+            self.clear()
+            return
+
+        bucket_ms = self._bucket_seconds * 1000
+        buckets: Dict[int, int] = {}
+
+        for flow in flows:
+            timestamp_ms = max(flow.start_micros // 1000, 0)
+            bucket = (timestamp_ms // bucket_ms) * bucket_ms
+            buckets[bucket] = buckets.get(bucket, 0) + 1
+
+        points = [
+            QPointF(bucket, count)
+            for bucket, count in sorted(buckets.items())
+        ]
+
+        if not points:
+            self.clear()
+            return
+
+        self._series.replace(points)
+        start_dt = QDateTime.fromMSecsSinceEpoch(int(points[0].x()))
+        end_dt = QDateTime.fromMSecsSinceEpoch(int(points[-1].x()))
+        if start_dt == end_dt:
+            end_dt = end_dt.addSecs(self._bucket_seconds)
+        self._axis_x.setRange(start_dt, end_dt)
+
+        max_count = max(point.y() for point in points)
+        self._axis_y.setRange(0, max(1.0, max_count * 1.1))
+
+
 class FlowAnalyticsPane(QGroupBox):
     """Container widget wiring analytics charts to the aggregator."""
 
@@ -246,6 +324,8 @@ class FlowAnalyticsPane(QGroupBox):
         self._aggregator = FlowAnalyticsAggregator()
         self._cluster_flow_sets: List[List[FlowSummary]] = []
         self._cluster_3d_data: List[Tuple[str, List[Tuple[float, float, float]]]] = []
+        self._cluster_summaries: List[Optional[ClusterSummary]] = []
+        self._cluster_axis_labels: Tuple[str, str] = ("", "")
 
         control_group = QWidget(self)
         control_layout = QFormLayout(control_group)
@@ -269,10 +349,16 @@ class FlowAnalyticsPane(QGroupBox):
         self.scatter_x_combo.setCurrentIndex(1)  # Packets
         self.scatter_y_combo.setCurrentIndex(2)  # Bytes
 
+        self.anomaly_threshold_spin = QDoubleSpinBox()
+        self.anomaly_threshold_spin.setRange(0.5, 5.0)
+        self.anomaly_threshold_spin.setSingleStep(0.5)
+        self.anomaly_threshold_spin.setValue(2.0)
+
         control_layout.addRow("Projection", self.projection_mode_combo)
         control_layout.addRow("Histogram metric", self.histogram_metric_combo)
         control_layout.addRow("Scatter X", self.scatter_x_combo)
         control_layout.addRow("Scatter Y", self.scatter_y_combo)
+        control_layout.addRow("Anomaly σ", self.anomaly_threshold_spin)
 
         layout.addWidget(control_group)
 
@@ -282,8 +368,10 @@ class FlowAnalyticsPane(QGroupBox):
 
         self._histogram = FeatureHistogram(self)
         self._scatter = ClusterScatterPlot(self)
+        self._timeline = FlowTimelineChart(self)
         chart_grid.addWidget(self._histogram, 0, 0)
         chart_grid.addWidget(self._scatter, 0, 1)
+        chart_grid.addWidget(self._timeline, 1, 0, 1, 2)
         charts_container = QWidget(self)
         charts_container.setLayout(chart_grid)
         layout.addWidget(charts_container)
@@ -299,6 +387,26 @@ class FlowAnalyticsPane(QGroupBox):
         ])
         self.cluster_details.setAlternatingRowColors(True)
         layout.addWidget(self.cluster_details)
+
+        self.anomaly_list = QTreeWidget()
+        self.anomaly_list.setColumnCount(6)
+        self.anomaly_list.setHeaderLabels(
+            [
+                "Flow ID",
+                "Cluster",
+                "Distance",
+                "Z-Score",
+                "Packets",
+                "Bytes",
+            ]
+        )
+        self.anomaly_list.setRootIsDecorated(False)
+        self.anomaly_list.setAlternatingRowColors(True)
+        layout.addWidget(self.anomaly_list)
+
+        self.anomaly_label = QLabel("Anomalies: none")
+        self.anomaly_label.setWordWrap(True)
+        layout.addWidget(self.anomaly_label)
 
         button_row = QHBoxLayout()
         self.cluster_export_button = QPushButton("Export Selected Cluster")
@@ -325,6 +433,7 @@ class FlowAnalyticsPane(QGroupBox):
         self.cluster_details.currentItemChanged.connect(self._on_cluster_item_changed)
         self.cluster_export_button.clicked.connect(self._on_cluster_export_clicked)
         self.cluster_3d_button.clicked.connect(self._open_3d_view)
+        self.anomaly_threshold_spin.valueChanged.connect(lambda _value: self._refresh_visuals())
 
         self._update_combobox_states()
         self._update_metrics()
@@ -338,11 +447,16 @@ class FlowAnalyticsPane(QGroupBox):
         self._aggregator.clear()
         self._cluster_flow_sets = []
         self._cluster_3d_data = []
+        self._cluster_summaries = []
+        self._cluster_axis_labels = ("", "")
         self._histogram.update_data([])
         self._scatter.update_clusters([])
+        self._timeline.clear()
         self.cluster_details.clear()
         self.cluster_export_button.setEnabled(False)
         self.cluster_label.setText("Clusters: insufficient data")
+        self.anomaly_list.clear()
+        self.anomaly_label.setText("Anomalies: none")
 
     # ------------------------------------------------------------------
     def _on_projection_changed(self, _index: int) -> None:
@@ -427,6 +541,7 @@ class FlowAnalyticsPane(QGroupBox):
             self.reset()
             return
 
+        self._timeline.update_data(flows)
         self._histogram.update_data(flows)
 
         if self._projection_mode() == "manual":
@@ -453,7 +568,13 @@ class FlowAnalyticsPane(QGroupBox):
             if result is None:
                 self.reset()
                 return
-            cluster_points, cluster_indices = _clusters_from_result(result, index_map)
+            feature_matrix = np.asarray(result.projection, dtype=float)
+            (
+                cluster_points,
+                cluster_indices,
+                cluster_rows,
+                cluster_labels,
+            ) = _clusters_from_result(result, index_map)
             axis_x_label = metric_x.axis_label
             axis_y_label = metric_y.axis_label
         else:
@@ -474,12 +595,19 @@ class FlowAnalyticsPane(QGroupBox):
             axis_x_label = _pc_axis_label("PC1", explained, 0)
             axis_y_label = _pc_axis_label("PC2", explained, 1)
             index_map = list(range(len(flows)))
-            cluster_points, cluster_indices = _clusters_from_result(result, index_map)
+            feature_matrix = np.asarray(result.projection, dtype=float)
+            (
+                cluster_points,
+                cluster_indices,
+                cluster_rows,
+                cluster_labels,
+            ) = _clusters_from_result(result, index_map)
 
         if not cluster_points:
             self.reset()
             return
 
+        self._cluster_axis_labels = (axis_x_label, axis_y_label)
         self._scatter.set_axis_labels(axis_x_label, axis_y_label)
 
         self._scatter.update_clusters([
@@ -505,6 +633,14 @@ class FlowAnalyticsPane(QGroupBox):
             )
             for i, flow_set in enumerate(self._cluster_flow_sets)
         ]
+
+        self._cluster_summaries = []
+        if result is not None:
+            summaries = summarize_clusters(result, self._cluster_axis_labels)
+            summary_map = {summary.cluster_label: summary for summary in summaries}
+            self._cluster_summaries = [summary_map.get(label) for label in cluster_labels]
+
+        self._update_anomalies(feature_matrix, cluster_indices, cluster_rows, flows)
 
         self._update_cluster_details()
 
@@ -539,6 +675,18 @@ class FlowAnalyticsPane(QGroupBox):
                 ]
             )
             item.setData(0, Qt.UserRole, index)
+            if index < len(self._cluster_summaries):
+                summary = self._cluster_summaries[index]
+                if summary is not None:
+                    tooltip_lines = []
+                    for axis_idx, axis_label in enumerate(self._cluster_axis_labels):
+                        if axis_idx >= len(summary.centroid):
+                            break
+                        tooltip_lines.append(
+                            f"{axis_label}: μ={summary.centroid[axis_idx]:.2f}, σ={summary.stdev[axis_idx]:.2f}"
+                        )
+                    if tooltip_lines:
+                        item.setToolTip(0, "\n".join(tooltip_lines))
             self.cluster_details.addTopLevelItem(item)
 
         self.cluster_details.blockSignals(False)
@@ -548,28 +696,109 @@ class FlowAnalyticsPane(QGroupBox):
             self.cluster_export_button.setEnabled(False)
             self.cluster_selected.emit([])
 
+    def _update_anomalies(
+        self,
+        matrix: np.ndarray,
+        cluster_indices: Sequence[Sequence[int]],
+        cluster_rows: Sequence[Sequence[int]],
+        flows: Sequence[FlowSummary],
+    ) -> None:
+        self.anomaly_list.blockSignals(True)
+        self.anomaly_list.clear()
+
+        if matrix.ndim == 1:
+            matrix = np.atleast_2d(matrix)
+        if matrix.shape[0] == 0:
+            self.anomaly_label.setText("Anomalies: none")
+            self.anomaly_list.blockSignals(False)
+            return
+
+        if matrix.shape[1] < 2:
+            padding = np.zeros((matrix.shape[0], 2 - matrix.shape[1]))
+            matrix = np.hstack([matrix, padding])
+        elif matrix.shape[1] > 2:
+            matrix = matrix[:, :2]
+
+        threshold = float(self.anomaly_threshold_spin.value())
+        anomalies: List[Tuple[float, float, int, FlowSummary]] = []
+
+        for cluster_idx, rows in enumerate(cluster_rows):
+            if not rows:
+                continue
+            points = matrix[list(rows)]
+            if points.shape[0] < 3:
+                # Too few samples to gauge variance reliably.
+                continue
+
+            centroid = points.mean(axis=0)
+            distances = np.linalg.norm(points - centroid, axis=1)
+            mean_distance = float(distances.mean())
+            std_distance = float(distances.std(ddof=1)) if points.shape[0] > 1 else 0.0
+            if std_distance <= 1e-9:
+                continue
+
+            limit = mean_distance + threshold * std_distance
+
+            for local_index, distance in enumerate(distances):
+                if distance <= limit:
+                    continue
+
+                flow_index = cluster_indices[cluster_idx][local_index]
+                if not (0 <= flow_index < len(flows)):
+                    continue
+                flow = flows[flow_index]
+                z_score = (distance - mean_distance) / std_distance if std_distance > 0 else 0.0
+                anomalies.append((distance, z_score, cluster_idx, flow))
+
+        if anomalies:
+            anomalies.sort(key=lambda item: item[1], reverse=True)
+            max_rows = 50
+            for distance, z_score, cluster_idx, flow in anomalies[:max_rows]:
+                item = QTreeWidgetItem(
+                    [
+                        flow.flow_id,
+                        f"{cluster_idx + 1}",
+                        f"{distance:.2f}",
+                        f"{z_score:.2f}",
+                        str(flow.packets),
+                        str(flow.bytes),
+                    ]
+                )
+                self.anomaly_list.addTopLevelItem(item)
+            self.anomaly_label.setText(
+                f"Anomalies: {len(anomalies)} flagged (σ > {threshold:g})"
+            )
+        else:
+            self.anomaly_label.setText("Anomalies: none")
+
+        self.anomaly_list.blockSignals(False)
+
 
 # ----------------------------------------------------------------------
 
 
 def _clusters_from_result(
-    result: Optional["ClusterResult"],
+    result: Optional[ClusterResult],
     index_map: Sequence[int],
-) -> Tuple[List[List[Tuple[float, float]]], List[List[int]]]:
+) -> Tuple[List[List[Tuple[float, float]]], List[List[int]], List[List[int]], List[int]]:
     if result is None:
-        return [], []
+        return [], [], [], []
 
     projection = np.asarray(result.projection)
     labels = np.asarray(result.labels, dtype=int)
     if projection.size == 0 or projection.shape[0] == 0:
-        return [], []
+        return [], [], [], []
 
     if projection.shape[1] < 2:
         zeros = np.zeros((projection.shape[0], 2 - projection.shape[1]))
         projection = np.hstack([projection, zeros])
+    elif projection.shape[1] > 2:
+        projection = projection[:, :2]
 
     clusters_points: List[List[Tuple[float, float]]] = []
     clusters_indices: List[List[int]] = []
+    clusters_rows: List[List[int]] = []
+    clusters_labels: List[int] = []
 
     unique_labels = sorted(set(labels.tolist()))
     for cluster_label in unique_labels:
@@ -585,18 +814,32 @@ def _clusters_from_result(
         ]
         clusters_points.append(pts)
         clusters_indices.append([index_map[pos] for pos in member_positions])
+        clusters_rows.append(member_positions)
+        clusters_labels.append(cluster_label)
+
+    if not clusters_points:
+        fallback_points = [
+            (
+                float(point[0]),
+                float(point[1]) if projection.shape[1] > 1 else 0.0,
+            )
+            for point in projection
+        ]
+        return [fallback_points], [list(index_map)], [list(range(len(index_map)))], [0]
 
     combined = sorted(
-        zip(clusters_points, clusters_indices),
-        key=lambda pair: len(pair[1]),
+        zip(clusters_points, clusters_indices, clusters_rows, clusters_labels),
+        key=lambda trio: len(trio[1]),
         reverse=True,
     )
 
-    if not combined:
-        return [], []
-
-    separated_points, separated_indices = zip(*combined)
-    return list(separated_points), list(separated_indices)
+    separated_points, separated_indices, separated_rows, separated_labels = zip(*combined)
+    return (
+        list(separated_points),
+        list(separated_indices),
+        list(separated_rows),
+        list(separated_labels),
+    )
 
 
 def _dataset_from_flows(flows: Sequence[FlowSummary]) -> Optional["FlowDataset"]:
