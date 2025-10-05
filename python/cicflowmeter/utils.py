@@ -8,6 +8,7 @@ from typing import Union
 
 FILE_SEP = os.sep
 LINE_SEP = os.linesep
+FLOW_SUFFIX = "_Flow.csv"
 
 
 def format_ip(value: Union[bytes, bytearray, str]) -> str:
@@ -20,4 +21,4 @@ def format_ip(value: Union[bytes, bytearray, str]) -> str:
     return str(value)
 
 
-__all__ = ["FILE_SEP", "LINE_SEP", "format_ip"]
+__all__ = ["FILE_SEP", "LINE_SEP", "FLOW_SUFFIX", "format_ip"]

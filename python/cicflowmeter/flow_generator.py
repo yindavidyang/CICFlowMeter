@@ -4,8 +4,15 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional
 
+from .ancillary import (
+    EndpointSummary,
+    IncrementalCSVWriter,
+    TimeBucket,
+    aggregate_flows_by_interval,
+    summarize_ip_endpoints,
+)
 from .basic_flow import BasicFlow
 from .basic_packet_info import BasicPacketInfo
 from .listeners import FlowGenListener
@@ -206,6 +213,69 @@ class FlowGenerator:
                     output.write(flow.dump_flow_based_features_ex() + LINE_SEP)
                     total += 1
         return total
+
+    # ------------------------------------------------------------------
+    def iter_all_flows(self) -> Iterable[BasicFlow]:
+        for flow in self.finished_flows.values():
+            yield flow
+        for flow in self.current_flows.values():
+            yield flow
+
+    def summarize_ip_addresses(self) -> Dict[str, EndpointSummary]:
+        return summarize_ip_endpoints(self.iter_all_flows())
+
+    def dump_ip_address_summary(self, file_full_path: str) -> int:
+        header = (
+            "ip,flows_as_src,flows_as_dst,packets_sent,packets_received,"
+            "bytes_sent,bytes_received,total_flows,total_packets,total_bytes"
+        )
+        summary = self.summarize_ip_addresses()
+        if not summary:
+            return 0
+
+        rows = [
+            ",".join(
+                [
+                    ip,
+                    str(data.flows_as_src),
+                    str(data.flows_as_dst),
+                    str(data.packets_sent),
+                    str(data.packets_received),
+                    str(int(data.bytes_sent)),
+                    str(int(data.bytes_received)),
+                    str(data.total_flows),
+                    str(data.total_packets),
+                    str(int(data.total_bytes)),
+                ]
+            )
+            for ip, data in sorted(summary.items())
+        ]
+        writer = IncrementalCSVWriter(file_full_path, header)
+        return writer.append_rows(rows)
+
+    def summarize_time_buckets(self, interval_seconds: float) -> List[TimeBucket]:
+        return aggregate_flows_by_interval(self.iter_all_flows(), interval_seconds)
+
+    def dump_time_buckets(self, file_full_path: str, interval_seconds: float) -> int:
+        header = "start_us,end_us,flow_count,packet_count,byte_count"
+        buckets = self.summarize_time_buckets(interval_seconds)
+        if not buckets:
+            return 0
+
+        rows = [
+            ",".join(
+                [
+                    str(bucket.start_us),
+                    str(bucket.end_us),
+                    str(bucket.flow_count),
+                    str(bucket.packet_count),
+                    str(int(bucket.byte_count)),
+                ]
+            )
+            for bucket in buckets
+        ]
+        writer = IncrementalCSVWriter(file_full_path, header)
+        return writer.append_rows(rows)
 
     # ------------------------------------------------------------------
     def _next_flow_index(self) -> int:
