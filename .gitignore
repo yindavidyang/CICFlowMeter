@@ -1,0 +1,27 @@
+# Maven
+/target/
+
+# Gradle
+/.gradle/
+/build/
+
+# Generated scripts and logs
+/bin/
+/logs/
+/data/
+/out/
+
+# IDE / tooling
+/.idea/
+*.iml
+*.ipr
+*.iws
+/.vs/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+*.log
