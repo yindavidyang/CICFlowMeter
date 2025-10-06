@@ -23,6 +23,10 @@ class FlowStats:
     total_packets: int = 0
     valid_packets: int = 0
     flows_written: int = 0
+    ip_summary_rows: int = 0
+    time_bucket_rows: int = 0
+    ip_summary_path: Optional[Path] = None
+    time_buckets_path: Optional[Path] = None
 
 
 class CSVFlowWriter:
@@ -89,6 +93,17 @@ def build_parser() -> argparse.ArgumentParser:
         default="INFO",
         help="Log level for diagnostic output.",
     )
+    parser.add_argument(
+        "--ip-summary",
+        action="store_true",
+        help="Write per-IP endpoint summary CSVs alongside flow reports.",
+    )
+    parser.add_argument(
+        "--time-buckets",
+        type=float,
+        metavar="SECONDS",
+        help="Write flow activity bucket CSVs with the given interval in seconds.",
+    )
     return parser
 
 
@@ -116,6 +131,8 @@ def process_pcap(
     activity_timeout_s: float,
     read_ip4: bool,
     read_ip6: bool,
+    ip_summary: bool,
+    time_bucket_interval: Optional[float],
 ) -> FlowStats:
     stats = FlowStats()
 
@@ -149,6 +166,27 @@ def process_pcap(
         header,
     )
 
+    if ip_summary:
+        ip_summary_path = output_dir / f"{pcap_file.name}_IP_Summary.csv"
+        if ip_summary_path.exists():
+            ip_summary_path.unlink()
+        rows = flow_generator.dump_ip_address_summary(str(ip_summary_path))
+        if rows:
+            stats.ip_summary_rows = rows
+            stats.ip_summary_path = ip_summary_path
+
+    if time_bucket_interval is not None:
+        time_bucket_path = output_dir / f"{pcap_file.name}_Time_Buckets.csv"
+        if time_bucket_path.exists():
+            time_bucket_path.unlink()
+        rows = flow_generator.dump_time_buckets(
+            str(time_bucket_path),
+            time_bucket_interval,
+        )
+        if rows:
+            stats.time_bucket_rows = rows
+            stats.time_buckets_path = time_bucket_path
+
     return stats
 
 
@@ -163,6 +201,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     read_ip4 = not args.no_ipv4
     read_ip6 = args.ipv6
+
+    if args.time_buckets is not None and args.time_buckets <= 0:
+        parser.error("--time-buckets interval must be greater than 0 seconds.")
 
     try:
         pcaps = collect_pcaps(args.pcap_path)
@@ -186,6 +227,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 activity_timeout_s=args.activity_timeout,
                 read_ip4=read_ip4,
                 read_ip6=read_ip6,
+                ip_summary=args.ip_summary,
+                time_bucket_interval=args.time_buckets,
             )
         except Exception as exc:  # pragma: no cover - unexpected runtime failures
             logger.exception("Failed processing %s", pcap_file)
@@ -198,6 +241,18 @@ def main(argv: Optional[List[str]] = None) -> int:
             stats.valid_packets,
             stats.flows_written,
         )
+        if stats.ip_summary_rows and stats.ip_summary_path is not None:
+            logger.info(
+                "Wrote %d IP summary rows to %s",
+                stats.ip_summary_rows,
+                stats.ip_summary_path,
+            )
+        if stats.time_bucket_rows and stats.time_buckets_path is not None:
+            logger.info(
+                "Wrote %d time bucket rows to %s",
+                stats.time_bucket_rows,
+                stats.time_buckets_path,
+            )
 
     return exit_code
 

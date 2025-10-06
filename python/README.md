@@ -26,7 +26,9 @@ Generate flow CSVs from PCAP files using the CLI:
 cicflowmeter /path/to/pcaps output_dir
 ```
 
-See `cicflowmeter --help` for flow timeout, protocol, and logging options.
+Use `--ip-summary` to emit per-endpoint aggregates and `--time-buckets <seconds>` to roll flows into fixed time windows alongside the primary `_Flow.csv` outputs.
+
+See `cicflowmeter --help` for the full set of flow timeout, protocol, and logging options.
 
 ### Qt Operator Console
 

@@ -74,7 +74,17 @@ def test_cli_generates_flow_csv(tmp_path):
     _build_cli_sample_pcap(pcap_path)
 
     output_dir = tmp_path / "out"
-    exit_code = main([str(pcap_path), str(output_dir), "--log-level", "ERROR"])
+    exit_code = main(
+        [
+            str(pcap_path),
+            str(output_dir),
+            "--log-level",
+            "ERROR",
+            "--ip-summary",
+            "--time-buckets",
+            "30",
+        ]
+    )
 
     assert exit_code == 0
 
@@ -85,3 +95,18 @@ def test_cli_generates_flow_csv(tmp_path):
     assert len(lines) >= 2
     assert lines[0] == FlowFeature.get_header()
     assert lines[1].endswith("NeedManualLabel")
+
+    ip_summary = output_dir / f"{pcap_path.name}_IP_Summary.csv"
+    assert ip_summary.exists()
+    ip_lines = [line for line in ip_summary.read_text().splitlines() if line.strip()]
+    assert ip_lines[0] == (
+        "ip,flows_as_src,flows_as_dst,packets_sent,packets_received,"
+        "bytes_sent,bytes_received,total_flows,total_packets,total_bytes"
+    )
+    assert len(ip_lines) >= 3
+
+    time_buckets = output_dir / f"{pcap_path.name}_Time_Buckets.csv"
+    assert time_buckets.exists()
+    bucket_lines = [line for line in time_buckets.read_text().splitlines() if line.strip()]
+    assert bucket_lines[0] == "start_us,end_us,flow_count,packet_count,byte_count"
+    assert len(bucket_lines) >= 2
