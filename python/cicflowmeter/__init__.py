@@ -22,6 +22,14 @@ from .clustering import (
     load_url_csv,
     perform_pca,
 )
+from .pcap_compat import (
+    InterfaceAddress,
+    PcapDevice,
+    get_hardware_address,
+    list_devices,
+    open_live,
+    open_offline,
+)
 
 __all__ = [
     "IdGenerator",
@@ -43,4 +51,10 @@ __all__ = [
     "IncrementalCSVWriter",
     "summarize_ip_endpoints",
     "aggregate_flows_by_interval",
+    "InterfaceAddress",
+    "PcapDevice",
+    "list_devices",
+    "get_hardware_address",
+    "open_live",
+    "open_offline",
 ]

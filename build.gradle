@@ -34,7 +34,10 @@ dependencies {
 sourceSets {
     main {
         java {
-            srcDir 'src'
+            srcDirs = [
+                'src',
+                'jnetpcap/jnetpcap-src-1.4.r1425-1/src/java1.5'
+            ]
             exclude '**/CICFlowMeter.java'
         }
     }

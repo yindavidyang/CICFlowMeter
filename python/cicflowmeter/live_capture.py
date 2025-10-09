@@ -48,12 +48,18 @@ class LiveCapture:
         bpf_filter: Optional[str] = None,
         flow_listener: Optional[FlowGenListener] = None,
         status_handler: Optional[Callable[[str], None]] = None,
+        snaplen: int = 65_535,
+        promiscuous: bool = True,
+        read_timeout: int = 1_000,
     ) -> None:
         self.interface = interface
         self.read_ip4 = read_ip4
         self.read_ip6 = read_ip6
         self.bpf_filter = bpf_filter
         self.status_handler = status_handler
+        self.snaplen = snaplen
+        self.promiscuous = promiscuous
+        self.read_timeout_ms = read_timeout
 
         self.flow_generator = FlowGenerator(
             bidirectional,
