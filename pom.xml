@@ -127,7 +127,7 @@
                     	<configuration>
                     		<archive>
                     			<manifest>
-                    				<mainClass>cic.cs.unb.ca.ifm.App</mainClass>
+                    				<mainClass>cic.cs.unb.ca.ifm.Cmd</mainClass>
                     			</manifest>
                     		</archive>
                     		<descriptorRefs>

@@ -78,11 +78,10 @@ task fatJar(type: Jar) {
 
     manifest {
 
-        attributes 'Premain-Class': 'swing.common.ObjectSizeFetcher'
         attributes 'Can-Retransform-Classes': true
         attributes 'Implementation-Title': 'Gradle Jar File Example',
                 'Implementation-Version': version,
-                'Main-Class': 'cic.cs.unb.ca.ifm.App'
+                'Main-Class': 'cic.cs.unb.ca.ifm.Cmd'
 
     }
     /*baseName = "NetWorkTraffic" + '-all'
@@ -96,7 +95,7 @@ task execute(type: JavaExec) {
     println 'type JavaExec'
 
 
-    main = "cic.cs.unb.ca.ifm.App" //main class
+    main = "cic.cs.unb.ca.ifm.Cmd" //main class
     classpath = sourceSets.main.runtimeClasspath
     String osName = System.getProperty('os.name').toLowerCase()
     if(osName.contains('windows')){
@@ -135,7 +134,7 @@ applicationDistribution.into("bin") {
 
 
 // The Application Plugin
-mainClassName = "cic.cs.unb.ca.ifm.App"
+mainClassName = "cic.cs.unb.ca.ifm.Cmd"
 applicationName = "CICFlowMeter"
 applicationDefaultJvmArgs = ["-Djava.library.path=../lib/native"]
 

@@ -2,13 +2,13 @@ package cic.cs.unb.ca.ifm;
 
 import cic.cs.unb.ca.flow.FlowMgr;
 import cic.cs.unb.ca.jnetpcap.*;
+import cic.cs.unb.ca.jnetpcap.Utils;
 import cic.cs.unb.ca.jnetpcap.worker.FlowGenListener;
 import org.apache.commons.io.FilenameUtils;
 import org.jnetpcap.PcapClosedException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import cic.cs.unb.ca.jnetpcap.worker.InsertCsvRow;
-import swing.common.SwingUtils;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -73,7 +73,7 @@ public class Cmd {
             readPcapDir(in,outPath,flowTimeout,activityTimeout);
         } else {
 
-            if (!SwingUtils.isPcapFile(in)) {
+            if (!Utils.isPcapFile(in)) {
                 logger.info("Please select pcap file!");
             } else {
                 logger.info("CICFlowMeter received 1 pcap file");
@@ -87,7 +87,7 @@ public class Cmd {
         if(inputPath==null||outPath==null) {
             return;
         }
-        File[] pcapFiles = inputPath.listFiles(SwingUtils::isPcapFile);
+        File[] pcapFiles = inputPath.listFiles(file -> Utils.isPcapFile(file));
         int file_cnt = pcapFiles.length;
         System.out.println(String.format("CICFlowMeter found :%d pcap files", file_cnt));
         for(int i=0;i<file_cnt;i++) {
@@ -154,7 +154,7 @@ public class Cmd {
 
         flowGen.dumpLabeledCurrentFlow(saveFileFullPath.getPath(), FlowFeature.getHeader());
 
-        long lines = SwingUtils.countLines(saveFileFullPath.getPath());
+        long lines = Utils.countLines(saveFileFullPath.getPath());
 
         System.out.println(String.format("%s is done. total %d flows ",fileName,lines));
         System.out.println(String.format("Packet stats: Total=%d,Valid=%d,Discarded=%d",nTotal,nValid,nDiscarded));
