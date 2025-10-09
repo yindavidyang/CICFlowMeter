@@ -97,11 +97,9 @@ task execute(type: JavaExec) {
 
     main = "cic.cs.unb.ca.ifm.Cmd" //main class
     classpath = sourceSets.main.runtimeClasspath
-    String osName = System.getProperty('os.name').toLowerCase()
-    if(osName.contains('windows')){
-        jvmArgs '-Djava.library.path=jnetpcap/win/jnetpcap-1.4.r1425'
-    }else{
-        jvmArgs '-Djava.library.path=jnetpcap/linux/jnetpcap-1.4.r1425'
+    def nativeLibPath = project.findProperty('jnetpcapNativePath') ?: System.getenv('JNETPCAP_NATIVE_PATH')
+    if (nativeLibPath) {
+        jvmArgs "-Djava.library.path=${nativeLibPath}"
     }
 }
 
@@ -109,11 +107,9 @@ task execute(type: JavaExec) {
 task exeCMD(type: JavaExec){
     main = "cic.cs.unb.ca.ifm.Cmd" //main class
     classpath = sourceSets.main.runtimeClasspath
-    String osName = System.getProperty('os.name').toLowerCase()
-    if(osName.contains('windows')){
-        jvmArgs '-Djava.library.path=jnetpcap/win/jnetpcap-1.4.r1425'
-    }else{
-        jvmArgs '-Djava.library.path=jnetpcap/linux/jnetpcap-1.4.r1425'
+    def nativeLibPath = project.findProperty('jnetpcapNativePath') ?: System.getenv('JNETPCAP_NATIVE_PATH')
+    if (nativeLibPath) {
+        jvmArgs "-Djava.library.path=${nativeLibPath}"
     }
     //args = ["/home/yzhang29/0a/Capture/", "/home/yzhang29/0a/Capture/out/"]
 }
@@ -132,20 +128,10 @@ applicationDistribution.into("bin") {
     fileMode = 0755
 }
 
-
 // The Application Plugin
 mainClassName = "cic.cs.unb.ca.ifm.Cmd"
 applicationName = "CICFlowMeter"
 applicationDefaultJvmArgs = ["-Djava.library.path=../lib/native"]
-
-applicationDistribution.from("jnetpcap/linux/jnetpcap-1.4.r1425") {
-    include "*.so"
-    into('lib/native')
-}
-applicationDistribution.from("jnetpcap/win/jnetpcap-1.4.r1425") {
-    include "*.dll"
-    into('lib/native')
-}
 applicationDistribution.from('LICENSE.txt'){
     into('')
 }
